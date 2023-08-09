@@ -1,0 +1,2 @@
+https://datasets.epfl.ch/taskonomy/woodbine_rgb.tar
+https://datasets.epfl.ch/taskonomy/woodbine_segment_semantic.tar
