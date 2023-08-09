@@ -18,8 +18,8 @@ def get_model(config, device=None, verbose=True, load_pretrained=True):
     label_backbone = VTMLabelBackbone(label_backbone)
     matching_module = VTMMatchingModule(dim_w, dim_z, config)
 
-    model = VTM(image_backbone, label_backbone, matching_module)
-        
+    model = VTM(image_backbone, label_backbone, matching_module, config)
+    
     if device is not None:
         model = model.to(device)
 

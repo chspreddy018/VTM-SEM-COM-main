@@ -130,12 +130,36 @@ class LightningTrainWrapper(pl.LightningModule):
         return self.model(*args, **kwargs)
     
     def training_step(self, batch, batch_idx):
-        X_S, Y_S, M_S, t_idx = batch
-        Y_Q_pred = self.model(X_S, Y_S, X_S, t_idx=t_idx, sigmoid=False)
-        loss = compute_loss(self.model, (X_S, Y_S, M_S, t_idx), self.config)  # Call the compute_loss method
-        metric = compute_metric(Y_S, Y_Q_pred, M_S, self.config.task)
-        self.log('train_loss', loss, on_step=True, on_epoch=True, prog_bar=True)
-        self.log('train_metric', metric, on_step=True, on_epoch=True, prog_bar=True)
+        '''
+        A single training iteration.
+        '''
+        # forward model and compute loss.
+        loss = compute_loss(self.model, batch, self.config)
+
+        # schedule learning rate.
+        self.lr_scheduler.step(self.global_step)
+
+        if self.config.stage == 0:
+            tag = ''
+        elif self.config.stage == 1:
+            if self.config.task == 'segment_semantic':
+                tag = f'_segment_semantic_{self.config.channel_idx}'
+            else:
+                tag = f'_{self.config.task}'
+        
+        # log losses and learning rate.
+        log_dict = {
+            f'training/loss{tag}': loss.detach(),
+            f'training/lr{tag}': self.lr_scheduler.lr,
+            'step': self.global_step,
+        }
+        self.log_dict(
+            log_dict,
+            logger=True,
+            on_step=True,
+            sync_dist=True,
+        )
+
         return loss
     
     @torch.autocast(device_type='cuda', dtype=torch.float32)

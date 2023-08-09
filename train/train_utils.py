@@ -13,39 +13,8 @@ import tqdm
 import numpy as np
 import torch
 
+from .trainer import LightningTrainWrapper
 from dataset.taskonomy_constants import TASKS, TASKS_GROUP_DICT
-
-
-class LightningTrainWrapper(pl.LightningModule):
-    # ...
-
-    def __init__(self, config=None):
-        super().__init__()
-        self.config = config
-    def set_config(self, config):
-        self.config = config
-        
-    def on_load_checkpoint(self, checkpoint):
-        if 'state_dict' in checkpoint:
-            state_dict = checkpoint['state_dict']
-            self._load_task_specific_parameters(state_dict)
-
-    def on_save_checkpoint(self, checkpoint):
-        state_dict = self.state_dict()
-        checkpoint['state_dict'] = state_dict
-
-    def _load_task_specific_parameters(self, state_dict):
-        # Logic to select task-specific parameters based on config
-        if self.config.channel_idx < 0:
-            t_idx = torch.tensor([TASKS.index(task) for task in TASKS_GROUP_DICT[self.config.task]])
-        else:
-            t_idx = torch.tensor([TASKS.index(f'{self.config.task}_{self.config.channel_idx}')])
-
-        for key in state_dict.keys():
-            if key in self.model.bias_parameter_names():
-                state_dict[key] = state_dict[key][t_idx]
-    
-    # ...
 
 
 def configure_experiment(config, model):
@@ -60,7 +29,7 @@ def configure_experiment(config, model):
 
     # create lightning callbacks, logger, and checkpoint plugin
     if config.stage <= 1:
-        callbacks = set_callbacks(config, save_dir, config.get('monitor', None), ptf=config.save_postfix)
+        callbacks = set_callbacks(config, save_dir, config.monitor, ptf=config.save_postfix)
         logger = CustomTBLogger(log_dir, name='', version='', default_hp_metric=False)
     else:
         callbacks = set_callbacks(config, save_dir)
@@ -76,7 +45,7 @@ def configure_experiment(config, model):
     if config.stage == 1:
         plugins = [CustomCheckpointIO([f'model.{name}' for name in model.model.bias_parameter_names()])]
     else:
-        plugins = []
+        plugins = None
     
     return logger, log_dir, callbacks, precision, strategy, plugins
 
@@ -87,17 +56,24 @@ def set_seeds(seed):
     random.seed(seed)
     np.random.seed(seed)
 
+
 def set_directories(config, root_dir='experiments', exp_name='', log_dir='logs', save_dir='checkpoints',
                     create_log_dir=True, create_save_dir=True, dir_postfix='', exp_subname=''):
+    print(f"Original exp_name: {exp_name}")
+    print(f"Original exp_subname: {exp_subname}")
+    exp_name = exp_name.replace(':', '_')
+    exp_subname = exp_subname.replace(':', '_')
+    
+    # Debug print to see the modified exp_name and exp_subname
+    print(f"Modified exp_name: {exp_name}")
+    print(f"Modified exp_subname: {exp_subname}")
+
     # make an experiment name
     if exp_name == '':
         if config.task == '':
-            exp_name = config.exp_name = f'{config.model}_fold_{config.task_fold}{config.name_postfix}'
+            exp_name = config.exp_name = f'{config.model}_fold:{config.task_fold}{config.name_postfix}'
         else:
-            exp_name = config.exp_name = f'{config.model}_task_{config.task}{config.name_postfix}'
-    
-    # Replace any colon with an underscore in the experiment name
-    exp_name = exp_name.replace(':', '_')
+            exp_name = config.exp_name = f'{config.model}_task:{config.task}{config.name_postfix}'
     
     # create the root directory
     os.makedirs(root_dir, exist_ok=True)
@@ -155,8 +131,13 @@ def set_directories(config, root_dir='experiments', exp_name='', log_dir='logs',
 
     return log_dir, save_dir
 
+
 def set_strategy(strategy):
-    
+    if strategy == 'ddp':
+        strategy = pl.strategies.DDPStrategy()
+    else:
+        strategy = None
+        
     return strategy
 
 
@@ -247,27 +228,13 @@ def select_task_specific_parameters(config, model, state_dict):
         if key in bias_parameters:
             state_dict[key] = state_dict[key][t_idx]
 
-def load_config(config_path):
-    """
-    Load configuration from a YAML file.
-
-    Args:
-        config_path (str): Path to the YAML config file.
-
-    Returns:
-        dict: Configuration dictionary.
-    """
-    with open(config_path, 'r') as f:
-        config = yaml.safe_load(f)
-    return config
-
 
 def load_model(config, verbose=True):
-    load_path = None  # Initialize load_path variable
-    
+    load_path = None
+
     # create trainer for episodic training
     if config.stage == 0:
-        model = LightningTrainWrapper(config=config)
+        model = LightningTrainWrapper(config, verbose=verbose)
         if config.continue_mode:
             load_path = get_ckpt_path(config.load_dir, config.exp_name, -1, save_postfix=config.save_postfix)
 
@@ -277,8 +244,8 @@ def load_model(config, verbose=True):
         ckpt_path = get_ckpt_path(config.load_dir, config.exp_name, 0)
         state_dict, config = load_ckpt(ckpt_path, config)
         
-        model = LightningTrainWrapper()  # Pass the config argument explicitly
-        # select task-specific parameters for the test task
+        model = LightningTrainWrapper(config=config, verbose=verbose)
+        # select task-specific parameters for test task
         if config.stage == 1:
             select_task_specific_parameters(config, model, state_dict)
         # load fine-tuned checkpoint
@@ -289,7 +256,6 @@ def load_model(config, verbose=True):
                 state_dict[key] = ft_state_dict[key]
                     
         print(model.load_state_dict(state_dict))
-        model.config = config
         if verbose:
             print(f'meta-trained checkpoint loaded from {ckpt_path}')
             if config.stage == 2:
